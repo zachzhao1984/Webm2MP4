@@ -3,7 +3,6 @@ import {
   DownloadIcon,
   FileIcon,
   LoaderCircleIcon,
-  ShieldCheckIcon,
   SparklesIcon,
   UploadCloudIcon,
 } from "lucide-react"
@@ -73,6 +72,7 @@ const formatDuration = (seconds: number | null) => {
 const supportsCaptureStream = () => {
   if (typeof document === "undefined") return false
   const video = document.createElement("video") as HTMLVideoElement & {
+    captureStream?: () => MediaStream
     webkitCaptureStream?: () => MediaStream
   }
   return typeof video.captureStream === "function" || typeof video.webkitCaptureStream === "function"
@@ -241,10 +241,17 @@ export function WebmConverter() {
         setDuration(durationSeconds)
       }
 
-      const capture =
-        videoElement.captureStream?.bind(videoElement) ??
-        (videoElement as HTMLVideoElement & { webkitCaptureStream?: () => MediaStream })
-          .webkitCaptureStream
+      const capture = (
+        videoElement as HTMLVideoElement & {
+          captureStream?: () => MediaStream
+          webkitCaptureStream?: () => MediaStream
+        }
+      ).captureStream
+        ? (videoElement as HTMLVideoElement & { captureStream?: () => MediaStream }).captureStream?.bind(
+            videoElement
+          )
+        : (videoElement as HTMLVideoElement & { webkitCaptureStream?: () => MediaStream })
+            .webkitCaptureStream
       const stream = capture ? capture() : null
       if (!stream) {
         throw new Error("captureStream is not available in this browser.")
@@ -261,8 +268,6 @@ export function WebmConverter() {
       const width = evenDimension(widthSource || 1280)
       const height = evenDimension(heightSource || 720)
       const frameRate = videoSettings.frameRate ?? 30
-      const totalDurationUs = durationSeconds ? durationSeconds * 1_000_000 : null
-
       const baseBitrate = Math.max(1_500_000, Math.round(width * height * frameRate * 0.07))
       const videoBitrate = Math.round(baseBitrate * quality.bitrateScale)
       const audioBitrate =
@@ -362,7 +367,7 @@ export function WebmConverter() {
       for (const candidate of videoConfigCandidates) {
         const support = await VideoEncoder.isConfigSupported(candidate)
         if (support.supported) {
-          chosenVideoConfig = support.config
+          chosenVideoConfig = support.config ?? candidate
           break
         }
       }
@@ -396,7 +401,6 @@ export function WebmConverter() {
           codec: "avc",
           width,
           height,
-          frameRate,
         },
         audio:
           audioEnabled && audioSampleRate && audioChannels
@@ -408,9 +412,16 @@ export function WebmConverter() {
             : undefined,
       })
 
+      let videoMeta: EncodedVideoChunkMetadata | null = null
       const videoEncoder = new VideoEncoder({
         output: (chunk, meta) => {
-          muxer.addVideoChunk(chunk, meta)
+          if (meta) {
+            videoMeta = meta
+          }
+          if (!videoMeta) {
+            throw new Error("Missing video encoder metadata.")
+          }
+          muxer.addVideoChunk(chunk, videoMeta)
         },
         error: (err) => {
           console.error(err)
@@ -419,10 +430,17 @@ export function WebmConverter() {
       videoEncoder.configure(chosenVideoConfig)
 
       let audioEncoder: AudioEncoder | null = null
+      let audioMeta: EncodedAudioChunkMetadata | null = null
       if (audioEnabled && audioEncoderConfig) {
         audioEncoder = new AudioEncoder({
           output: (chunk, meta) => {
-            muxer.addAudioChunk(chunk, meta)
+            if (meta) {
+              audioMeta = meta
+            }
+            if (!audioMeta) {
+              throw new Error("Missing audio encoder metadata.")
+            }
+            muxer.addAudioChunk(chunk, audioMeta)
           },
           error: (err) => {
             console.error(err)
